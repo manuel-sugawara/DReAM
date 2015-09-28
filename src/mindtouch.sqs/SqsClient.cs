@@ -195,9 +195,6 @@ namespace MindTouch.Sqs {
                     }),
                     queueName,
                     SENDING_MESSAGE);
-                if(response.HttpStatusCode != HttpStatusCode.OK) {
-                    _sendErrorHandler(queueName.Value, new[] { messageBody });
-                }
                 AssertSuccessfulStatusCode(response.HttpStatusCode, queueName, SENDING_MESSAGE);
             } catch(Exception) {
                 _sendErrorHandler(queueName.Value, new[] { messageBody });
@@ -238,8 +235,7 @@ namespace MindTouch.Sqs {
                 return failedMessages;
             } catch(Exception) {
 
-                // If an exception is thrown let's just assume that all the 
-                // messages failed.
+                // If an exception is thrown let's just assume that all the messages failed.
                 _sendErrorHandler(queueName.Value, messageBodies);
                 throw;
             }
