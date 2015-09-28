@@ -48,7 +48,7 @@ namespace MindTouch.Sqs {
         public readonly SqsQueueName QueueName;
 
         private readonly ISqsClient _client;
-        private readonly TimedAccumulator<KeyValuePair<int, string>> _timedSendAccumulator;
+        private readonly TimedAccumulator<string> _timedSendAccumulator;
 
         //--- Constructors ---
 
@@ -64,7 +64,7 @@ namespace MindTouch.Sqs {
             }
             this.QueueName = queueName;
             _client = client;
-            _timedSendAccumulator = new TimedAccumulator<KeyValuePair<int, string>>(items => AsyncUtil.ForkBackgroundSender(() => BatchSendMessages(items)), SqsUtils.MAX_NUMBER_OF_BATCH_SEND_MESSAGES, AUTOFLUSH_TIME, timerFactory);
+            _timedSendAccumulator = new TimedAccumulator<string>(items => AsyncUtil.ForkBackgroundSender(() => BatchSendMessages(items)), SqsUtils.MAX_NUMBER_OF_BATCH_SEND_MESSAGES, AUTOFLUSH_TIME, timerFactory);
         }
 
         //--- Methods ---
@@ -74,26 +74,11 @@ namespace MindTouch.Sqs {
         /// </summary>
         /// <param name="messageBody">Message body.</param>
         public void EnqueueMessage(string messageBody) {
-            _timedSendAccumulator.Enqueue(new KeyValuePair<int, string>(0, messageBody));
+            _timedSendAccumulator.Enqueue(messageBody);
         }
 
-        private void BatchSendMessages(IEnumerable<KeyValuePair<int, string>> items) {
-            var failedMessages = _client.SendMessages(QueueName, items.Select(item => item.Value));
-            if(failedMessages.Any()) {
-
-                // give failed messages up to 2 additional attempts
-                var messageLookup = items.ToDictionary(item => item.Value, item => item.Key);
-                foreach(var failedMessage in failedMessages) {
-                    int retryCount;
-                    if(messageLookup.TryGetValue(failedMessage, out retryCount) && (retryCount < 2)) {
-                        _timedSendAccumulator.Enqueue(new KeyValuePair<int, string>(retryCount + 1, failedMessage));
-                    } else {
-
-                        // attempts failed, log it into the error log in a format that may allow us to recover it at a later date
-                        _log.ErrorFormat("failed to send message on '{0}': {1}", QueueName, failedMessage.EscapeString());
-                    }
-                }
-            }
+        private void BatchSendMessages(IEnumerable<string> items) {
+            _client.SendMessages(QueueName, items);
         }
     }
 }
