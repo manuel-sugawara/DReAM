@@ -54,6 +54,7 @@ namespace MindTouch.Sqs {
         //--- Fields ---
         private readonly AmazonSQSClient _client;
         private readonly SqsClientConfig _config;
+        private Action<string, IEnumerable<string>> _sendErrorHandler;
         private const string RECEIVING_MESSAGE = "receiving message";
         private const string DELETING_MESSAGE = "deleting message";
         private const string SENDING_MESSAGE = "sending message";
@@ -68,11 +69,16 @@ namespace MindTouch.Sqs {
         /// Constructor for creating an instance.
         /// </summary>
         /// <param name="sqsClientConfig">Client configuration.</param>
-        public SqsClient(SqsClientConfig sqsClientConfig) {
+        /// <param name="sendErrorHandler">Handler that gets called if the messages fails to be sent.</param>
+        public SqsClient(SqsClientConfig sqsClientConfig,  Action<string, IEnumerable<string>> sendErrorHandler) {
             if(sqsClientConfig == null) {
                 throw new ArgumentNullException("sqsClientConfig");
             }
+            if(sendErrorHandler == null) {
+                throw new ArgumentNullException("sendErrorHandler");
+            }
             _config = sqsClientConfig;
+            _sendErrorHandler = sendErrorHandler;
             if(!string.IsNullOrEmpty(_config.PublicKey) && !string.IsNullOrEmpty(_config.PrivateKey)) {
                 var config = new AmazonSQSConfig { ServiceURL = _config.Endpoint.ToString() };
                 if(_config.ProxyHost != null) {
@@ -179,16 +185,24 @@ namespace MindTouch.Sqs {
         /// <param name="messageBody">Message body.</param>
         /// <param name="delay">Time to wait until the message becomes visible.</param>
         public void SendMessage(SqsQueueName queueName, string messageBody, TimeSpan delay) {
-            var response = Invoke(() =>
-                _client.SendMessage(new SendMessageRequest {
-                    QueueUrl = GetQueueUrl(queueName.Value),
-                    MessageBody = messageBody,
-                    DelaySeconds = (int)delay.TotalSeconds,
-                    MessageAttributes = GetQueueNameAttribute(queueName.Value)
-                }),
-                queueName,
-                SENDING_MESSAGE);
-            AssertSuccessfulStatusCode(response.HttpStatusCode, queueName, SENDING_MESSAGE);
+            try {
+                var response = Invoke(() =>
+                    _client.SendMessage(new SendMessageRequest {
+                        QueueUrl = GetQueueUrl(queueName.Value),
+                        MessageBody = messageBody,
+                        DelaySeconds = (int)delay.TotalSeconds,
+                        MessageAttributes = GetQueueNameAttribute(queueName.Value)
+                    }),
+                    queueName,
+                    SENDING_MESSAGE);
+                if(response.HttpStatusCode != HttpStatusCode.OK) {
+                    _sendErrorHandler(queueName.Value, new[] { messageBody });
+                }
+                AssertSuccessfulStatusCode(response.HttpStatusCode, queueName, SENDING_MESSAGE);
+            } catch(Exception) {
+                _sendErrorHandler(queueName.Value, new[] { messageBody });
+                throw;
+            }
         }
 
         /// <summary>
@@ -204,19 +218,31 @@ namespace MindTouch.Sqs {
             var msgId = 1;
             var attributes = GetQueueNameAttribute(queueName.Value);
             var sendEntries = (from messageBody in messageBodies select new SendMessageBatchRequestEntry { MessageBody = messageBody, Id = string.Format("msg-{0}", msgId++), MessageAttributes = attributes }).ToList();
-            var response = Invoke(() =>
-                _client.SendMessageBatch(new SendMessageBatchRequest {
-                    QueueUrl = GetQueueUrl(queueName.Value),
-                    Entries = sendEntries
-                }),
-                queueName,
-                SENDING_BATCH_MESSAGES);
-            AssertSuccessfulStatusCode(response.HttpStatusCode, queueName, SENDING_BATCH_MESSAGES);
-            if(response.Failed.None()) {
-                return Enumerable.Empty<string>();
+            try {
+                var response = Invoke(() =>
+                    _client.SendMessageBatch(new SendMessageBatchRequest {
+                        QueueUrl = GetQueueUrl(queueName.Value),
+                        Entries = sendEntries
+                    }),
+                    queueName,
+                    SENDING_BATCH_MESSAGES);
+                AssertSuccessfulStatusCode(response.HttpStatusCode, queueName, SENDING_BATCH_MESSAGES);
+                if(response.Failed.None()) {
+                    return Enumerable.Empty<string>();
+                }
+                var messagesById = sendEntries.ToDictionary(entry => entry.Id, entry => entry.MessageBody);
+                var failedMessages = response.Failed.Select(failed => messagesById.TryGetValue(failed.Id, null)).Where(messageBody => messageBody != null).ToArray();
+                if(failedMessages.Any()) {
+                    _sendErrorHandler(queueName.Value, failedMessages);
+                }
+                return failedMessages;
+            } catch(Exception) {
+
+                // If an exception is thrown let's just assume that all the 
+                // messages failed.
+                _sendErrorHandler(queueName.Value, messageBodies);
+                throw;
             }
-            var messagesById = sendEntries.ToDictionary(entry => entry.Id, entry => entry.MessageBody);
-            return response.Failed.Select(failed => messagesById.TryGetValue(failed.Id, null)).Where(messageBody => messageBody != null).ToArray();
         }
 
         /// <summary>

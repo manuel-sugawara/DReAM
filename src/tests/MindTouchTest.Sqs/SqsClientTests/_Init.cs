@@ -52,7 +52,7 @@ namespace MindTouchTest.Sqs.SqsClientTests {
                 .Elem("endpoint", "default")
                 .Elem("accountid", accountId)
                 .Elem("publickey", publicKey)
-                .Elem("privatekey", privateKey)));
+                .Elem("privatekey", privateKey)), (name, failed) => { });
             TEST_QUEUE = new SqsQueueName("steveb-events");
 
             // purge the queue
